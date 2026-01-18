@@ -4,7 +4,7 @@
 - 🏦 Interested in Applied Mathematics.
 - 🎻 I love Classical music and play the Cello in an orchestra.
 - ☖ I play Shogi (Japanese Chess) and Go.
-- 🌱 I’m currently learning linear algebra and probability theory.
+
 <!--
 **Suzu-Yasu/Suzu-Yasu** is a ✨ _special_ ✨ repository because its `README.md` (this file) appears on your GitHub profile.
 
