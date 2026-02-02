@@ -1,6 +1,6 @@
 ## Hi there 👋
 
-- 🌱 I’m currently learning Python & Data Science.
+- 🌱 I’m currently learning Python, C++ & Data Science.
 - 🏦 Interested in Applied Mathematics.
 - 🎻 I love Classical music and play the Cello in an orchestra.
 - ☖ I play Shogi (Japanese Chess) and Go.
