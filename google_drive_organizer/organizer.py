@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 
 from classifier import classify
 from drive_client import DriveClient
+from ocr import ocr_classify
 
 # ------------------------------------------------------------------ #
 #  定数
@@ -61,6 +62,7 @@ class OrganizerStats:
 def organize_inbox(
     client: DriveClient,
     dry_run: bool = False,
+    use_ocr: bool = False,
 ) -> OrganizerStats:
     """
     00_Inbox 内のファイルを分類して各フォルダに移動する。
@@ -69,6 +71,7 @@ def organize_inbox(
     ----------
     client  : DriveClient
     dry_run : True の場合は移動を行わず、ログ出力のみ
+    use_ocr : True の場合、ファイル名で分類できなかったファイルに OCR を試みる
 
     Returns
     -------
@@ -109,9 +112,15 @@ def organize_inbox(
         logger.debug("'%s' → %s (%s)", file_name, result.target_path, result.reason)
 
         if not result.is_classified or not result.target_path:
-            logger.info("SKIP '%s': %s", file_name, result.reason)
-            stats.skipped.append(file_name)
-            continue
+            # ファイル名での分類失敗 → OCR フォールバック
+            if use_ocr:
+                logger.info("OCRフォールバック: '%s'", file_name)
+                result = ocr_classify(client.service, file_id, file_name)
+
+            if not result.is_classified or not result.target_path:
+                logger.info("SKIP '%s': %s", file_name, result.reason)
+                stats.skipped.append(file_name)
+                continue
 
         # --- 移動先フォルダ ID を解決 (なければ作成) ---
         try:
@@ -169,6 +178,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=None,
         help="token.json のパスを指定 (デフォルト: credentials/token.json)",
     )
+    parser.add_argument(
+        "--ocr",
+        action="store_true",
+        help=(
+            "ファイル名で分類できなかったファイルに Drive OCR を試みる。"
+            "PDF・画像ファイルからテキストを抽出して分類先を推定する。"
+        ),
+    )
     return parser
 
 
@@ -186,6 +203,8 @@ def main() -> None:
     logger = logging.getLogger(__name__)
     if args.dry_run:
         logger.info("=== ドライランモード: ファイルは移動されません ===")
+    if args.ocr:
+        logger.info("=== OCRモード: 命名規則外ファイルに Drive OCR を適用します ===")
 
     # DriveClient 初期化
     kwargs: dict = {}
@@ -197,7 +216,7 @@ def main() -> None:
     client = DriveClient(**kwargs)
 
     # 整理実行
-    stats = organize_inbox(client, dry_run=args.dry_run)
+    stats = organize_inbox(client, dry_run=args.dry_run, use_ocr=args.ocr)
 
     # サマリー表示
     print(stats.summary())
