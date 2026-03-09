@@ -3,7 +3,7 @@
 - 🌱 I’m currently learning Python, C++ & Data Science.
 - 🏦 Interested in Applied Mathematics.
 - 🎻 I love Classical music and play the Cello in an orchestra.
-- ☖ I play Shogi (Japanese Chess) and Go.
+
 
 <!--
 **Suzu-Yasu/Suzu-Yasu** is a ✨ _special_ ✨ repository because its `README.md` (this file) appears on your GitHub profile.
