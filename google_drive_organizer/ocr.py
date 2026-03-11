@@ -1,13 +1,12 @@
 """
 ocr.py
-Google Drive の組み込み OCR を使ってテキストを抽出し、
-ファイル名だけでは分類できなかったファイルの移動先を推定するモジュール。
+ファイルからテキストを抽出し、ファイル名だけでは分類できなかった
+ファイルの移動先を推定するモジュール。
 
-仕組み:
-  1. Drive API で PDF/画像をGoogle Docとして一時コピー (→Drive側がOCR実行)
-  2. Google Doc をプレーンテキストにエクスポート
-  3. 一時コピーを削除
-  4. 抽出テキストをキーワード解析して ClassificationResult を返す
+2つの抽出方式を提供:
+  [Drive OCR]   extract_text_via_drive_ocr() — Google Drive API 経由 (organizer.py 用)
+  [ローカルOCR] extract_text_local_from_path() — Google API 不要 (local_organizer.py 用)
+                  pdfplumber (テキストPDF) + pytesseract (スキャンPDF・画像)
 
 対応フォーマット:
   PDF (.pdf), JPEG (.jpg / .jpeg), PNG (.png), TIFF (.tiff / .tif),
@@ -241,6 +240,125 @@ def classify_from_text(text: str, filename: str) -> ClassificationResult:
 
 
 # ================================================================== #
+#  ローカル OCR (Google API 不要)
+# ================================================================== #
+
+def extract_text_local_from_path(filepath) -> Optional[str]:
+    """
+    ローカルファイルからテキストを抽出する。Google API 不要。
+
+    処理の優先順:
+      1. PDF → pdfplumber でテキスト層を直接抽出 (テキストPDF・高速)
+      2. テキストが空 → pdf2image + pytesseract でOCR (スキャンPDF)
+      3. 画像ファイル → pytesseract で直接OCR
+
+    必要なパッケージ:
+      pip install pdfplumber pytesseract pdf2image pillow
+
+    必要なシステムパッケージ:
+      Ubuntu: sudo apt-get install tesseract-ocr tesseract-ocr-jpn poppler-utils
+      macOS : brew install tesseract tesseract-lang poppler
+
+    Parameters
+    ----------
+    filepath : str または Path — ローカルファイルパス
+    """
+    from pathlib import Path
+    filepath = Path(filepath)
+    ext = filepath.suffix.lower()
+
+    if ext not in OCR_SUPPORTED_EXTENSIONS:
+        logger.debug("OCR非対応フォーマット: %s", filepath.name)
+        return None
+
+    try:
+        if ext == ".pdf":
+            return _extract_pdf_local(filepath)
+        else:
+            return _extract_image_local(filepath)
+    except Exception as e:
+        logger.warning("ローカルOCRエラー '%s': %s", filepath.name, e)
+        return None
+
+
+def _extract_pdf_local(filepath) -> Optional[str]:
+    """
+    PDFからテキストを抽出する。
+    テキスト層があれば pdfplumber、スキャンPDFは pdf2image + pytesseract。
+    """
+    try:
+        import pdfplumber
+    except ImportError:
+        raise ImportError("pdfplumber が未インストールです: pip install pdfplumber")
+
+    # 1. テキスト層を試みる
+    text_parts: list[str] = []
+    with pdfplumber.open(filepath) as pdf:
+        for page in pdf.pages:
+            t = page.extract_text()
+            if t:
+                text_parts.append(t)
+
+    text = "\n".join(text_parts).strip()
+    if len(text) >= 20:  # 20文字以上あればテキストPDFと判断
+        logger.debug("pdfplumber でテキスト抽出: %d 文字", len(text))
+        return text
+
+    # 2. テキスト層が薄い → スキャンPDF として画像OCR
+    logger.debug("テキスト層が薄い → pdf2image + pytesseract で OCR")
+    return _pdf_to_images_and_ocr(filepath)
+
+
+def _pdf_to_images_and_ocr(filepath) -> Optional[str]:
+    """PDF を画像に変換して pytesseract で OCR する。"""
+    try:
+        from pdf2image import convert_from_path
+    except ImportError:
+        raise ImportError(
+            "pdf2image が未インストールです: pip install pdf2image\n"
+            "また poppler も必要です: apt install poppler-utils / brew install poppler"
+        )
+
+    images = convert_from_path(str(filepath), dpi=200)
+    texts = [_tesseract_ocr(img) for img in images]
+    result = "\n".join(t for t in texts if t).strip()
+    logger.debug("pdf2image+pytesseract: %d ページ, %d 文字", len(images), len(result))
+    return result if result else None
+
+
+def _extract_image_local(filepath) -> Optional[str]:
+    """画像ファイルを pytesseract で OCR する。"""
+    try:
+        from PIL import Image
+    except ImportError:
+        raise ImportError("Pillow が未インストールです: pip install pillow")
+
+    img = Image.open(filepath)
+    text = _tesseract_ocr(img)
+    logger.debug("pytesseract: %d 文字", len(text) if text else 0)
+    return text if text else None
+
+
+def _tesseract_ocr(image) -> Optional[str]:
+    """pytesseract で画像からテキストを抽出する (日本語+英語)。"""
+    try:
+        import pytesseract
+    except ImportError:
+        raise ImportError(
+            "pytesseract が未インストールです: pip install pytesseract\n"
+            "Tesseract本体も必要です: apt install tesseract-ocr tesseract-ocr-jpn"
+        )
+
+    # 日本語+英語で認識 (jpn が未インストールの場合は eng のみ)
+    try:
+        text = pytesseract.image_to_string(image, lang="jpn+eng")
+    except pytesseract.TesseractError:
+        text = pytesseract.image_to_string(image, lang="eng")
+
+    return text.strip() if text.strip() else None
+
+
+# ================================================================== #
 #  公開 API: ワンショット関数
 # ================================================================== #
 
@@ -252,7 +370,7 @@ def ocr_classify(
     """
     Drive OCR でテキスト抽出 → 分類先を返す。
 
-    organizer.py からのメインエントリーポイント。
+    organizer.py (Drive API 版) からのメインエントリーポイント。
     """
     text = extract_text_via_drive_ocr(service, file_id, file_name)
     if text is None:
