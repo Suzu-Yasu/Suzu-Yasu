@@ -4,15 +4,21 @@ setup_autostart.py
 OS に登録・解除するセットアップスクリプト。
 
 対応 OS:
-  Linux  : systemd ユーザーサービス (~/.config/systemd/user/)
+  Linux  : systemd ユーザーサービス (~/.config/systemd/user/) + cron
   macOS  : launchd LaunchAgent  (~/Library/LaunchAgents/)
 
 使い方:
-    # サービスを登録して即起動
-    python setup_autostart.py install --root ~/GoogleDrive
+    # INBOX への追加をリアルタイムで即時振り分け (watchdog 常駐)
+    python setup_autostart.py install --root ~/GoogleDrive --watch
+
+    # 毎日 05:00 に定時フルスキャン (cron/launchd)
+    python setup_autostart.py install --root ~/GoogleDrive --schedule 05:00
+
+    # 即時振り分け + 定時スキャンの両方 (推奨)
+    python setup_autostart.py install --root ~/GoogleDrive --watch --schedule 05:00
 
     # OCR も有効にして登録
-    python setup_autostart.py install --root ~/GoogleDrive --ocr
+    python setup_autostart.py install --root ~/GoogleDrive --watch --ocr
 
     # サービスの状態確認
     python setup_autostart.py status
@@ -38,6 +44,10 @@ logger = logging.getLogger(__name__)
 # サービス識別子
 SERVICE_NAME = "drive-organizer"
 MACOS_LABEL  = f"com.user.{SERVICE_NAME}"
+MACOS_LABEL_SCHEDULE = f"com.user.{SERVICE_NAME}-schedule"
+
+# crontab 識別コメント
+CRON_COMMENT = "# drive-organizer-schedule"
 
 # このスクリプトの場所 = local_organizer.py がある場所
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -61,7 +71,25 @@ def _python_executable() -> str:
 
 
 # ================================================================== #
-#  Linux: systemd ユーザーサービス
+#  スケジュールパーサ
+# ================================================================== #
+
+def _parse_schedule(schedule: str) -> tuple[int, int]:
+    """'HH:MM' 形式をパースして (hour, minute) を返す。不正な場合は ValueError。"""
+    parts = schedule.split(":")
+    if len(parts) != 2:
+        raise ValueError(f"スケジュール形式が不正です: {schedule!r} (例: 05:00)")
+    try:
+        hour, minute = int(parts[0]), int(parts[1])
+    except ValueError:
+        raise ValueError(f"スケジュール形式が不正です: {schedule!r} (例: 05:00)")
+    if not (0 <= hour <= 23 and 0 <= minute <= 59):
+        raise ValueError(f"時刻が範囲外です: {schedule!r} (hour: 0-23, minute: 0-59)")
+    return hour, minute
+
+
+# ================================================================== #
+#  Linux: systemd ユーザーサービス (--watch)
 # ================================================================== #
 
 def _systemd_service_path() -> Path:
@@ -110,13 +138,12 @@ def _systemd_install(root: Path, use_ocr: bool) -> None:
     # 今すぐ起動
     _run(["systemctl", "--user", "start", SERVICE_NAME])
 
-    print(f"\n✓ サービスを登録・起動しました。")
+    print(f"\n✓ 即時監視サービスを登録・起動しました。")
     print(f"  監視対象 : {root / '00_Inbox'}")
     if use_ocr:
         print(f"  OCR      : 有効 (Tesseract)")
     print(f"\n  ログ     : {LOG_DIR}/organizer.log")
     print(f"  状態確認 : systemctl --user status {SERVICE_NAME}")
-    print(f"  停止     : python setup_autostart.py uninstall")
 
 
 def _systemd_uninstall() -> None:
@@ -128,7 +155,7 @@ def _systemd_uninstall() -> None:
         service_path.unlink()
         logger.info("サービスファイルを削除: %s", service_path)
     _run(["systemctl", "--user", "daemon-reload"])
-    print(f"\n✓ サービスを停止・解除しました。")
+    print(f"\n✓ 即時監視サービスを停止・解除しました。")
 
 
 def _systemd_status() -> None:
@@ -137,7 +164,101 @@ def _systemd_status() -> None:
 
 
 # ================================================================== #
-#  macOS: launchd LaunchAgent
+#  Linux: cron (--schedule)
+# ================================================================== #
+
+def _cron_entry(root: Path, use_ocr: bool, hour: int, minute: int) -> str:
+    """crontab に追加する1行を返す。"""
+    args = f"--root {root}"
+    if use_ocr:
+        args += " --ocr"
+    log = LOG_DIR / "organizer.log"
+    return f"{minute} {hour} * * * {_python_executable()} {LOCAL_ORGANIZER} {args} >> {log} 2>&1"
+
+
+def _cron_install(root: Path, use_ocr: bool, hour: int, minute: int) -> None:
+    """既存の crontab に drive-organizer エントリを追加または上書き。"""
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+
+    result = subprocess.run(["crontab", "-l"], capture_output=True, text=True)
+    current = result.stdout if result.returncode == 0 else ""
+
+    # 既存の drive-organizer エントリを削除
+    lines = current.splitlines()
+    new_lines: list[str] = []
+    skip_next = False
+    for line in lines:
+        if skip_next:
+            skip_next = False
+            continue
+        if line.strip() == CRON_COMMENT:
+            skip_next = True
+            continue
+        new_lines.append(line)
+
+    # 新しいエントリを追加
+    new_lines.append(CRON_COMMENT)
+    new_lines.append(_cron_entry(root, use_ocr, hour, minute))
+
+    new_crontab = "\n".join(new_lines) + "\n"
+    proc = subprocess.run(["crontab", "-"], input=new_crontab, text=True, capture_output=True)
+    if proc.returncode != 0:
+        raise RuntimeError(f"crontab の更新に失敗しました: {proc.stderr}")
+    logger.info("crontab にエントリを追加しました")
+
+    print(f"\n✓ 定時実行 cron ジョブを登録しました。")
+    print(f"  実行時刻 : 毎日 {hour:02d}:{minute:02d}")
+    print(f"  ログ     : {LOG_DIR}/organizer.log")
+    print(f"  確認     : crontab -l")
+
+
+def _cron_uninstall() -> None:
+    """crontab から drive-organizer エントリを削除。エントリがなければ何もしない。"""
+    result = subprocess.run(["crontab", "-l"], capture_output=True, text=True)
+    if result.returncode != 0:
+        return
+
+    lines = result.stdout.splitlines()
+    new_lines: list[str] = []
+    skip_next = False
+    removed = False
+    for line in lines:
+        if skip_next:
+            skip_next = False
+            removed = True
+            continue
+        if line.strip() == CRON_COMMENT:
+            skip_next = True
+            continue
+        new_lines.append(line)
+
+    if not removed:
+        return
+
+    new_crontab = "\n".join(new_lines) + "\n"
+    subprocess.run(["crontab", "-"], input=new_crontab, text=True, capture_output=True)
+    logger.info("crontab からエントリを削除しました")
+    print(f"\n✓ 定時実行 cron ジョブを解除しました。")
+
+
+def _cron_status() -> None:
+    """crontab の drive-organizer エントリを表示する。"""
+    result = subprocess.run(["crontab", "-l"], capture_output=True, text=True)
+    if result.returncode != 0:
+        print("  cron: エントリなし")
+        return
+    found = False
+    lines = result.stdout.splitlines()
+    for i, line in enumerate(lines):
+        if line.strip() == CRON_COMMENT and i + 1 < len(lines):
+            print(f"  cron スケジュール: {lines[i + 1]}")
+            found = True
+    if not found:
+        print("  cron: drive-organizer のエントリなし")
+
+
+# ================================================================== #
+#  macOS: launchd LaunchAgent (--watch)
 # ================================================================== #
 
 def _launchd_plist_path() -> Path:
@@ -205,13 +326,12 @@ def _launchd_install(root: Path, use_ocr: bool) -> None:
     # 登録・起動
     _run(["launchctl", "load", "-w", str(plist_path)])
 
-    print(f"\n✓ LaunchAgent を登録・起動しました。")
+    print(f"\n✓ 即時監視 LaunchAgent を登録・起動しました。")
     print(f"  監視対象 : {root / '00_Inbox'}")
     if use_ocr:
         print(f"  OCR      : 有効 (Tesseract)")
     print(f"\n  ログ     : {LOG_DIR}/organizer.log")
     print(f"  状態確認 : launchctl list {MACOS_LABEL}")
-    print(f"  停止     : python setup_autostart.py uninstall")
 
 
 def _launchd_uninstall() -> None:
@@ -221,12 +341,101 @@ def _launchd_uninstall() -> None:
         _run(["launchctl", "unload", str(plist_path)], check=False)
         plist_path.unlink()
         logger.info("plist を削除: %s", plist_path)
-    print(f"\n✓ LaunchAgent を停止・解除しました。")
+        print(f"\n✓ 即時監視 LaunchAgent を停止・解除しました。")
 
 
 def _launchd_status() -> None:
     """launchd エージェントの状態を表示する。"""
     _run(["launchctl", "list", MACOS_LABEL], check=False)
+
+
+# ================================================================== #
+#  macOS: launchd 定時実行 LaunchAgent (--schedule)
+# ================================================================== #
+
+def _launchd_plist_schedule_path() -> Path:
+    return Path.home() / "Library" / "LaunchAgents" / f"{MACOS_LABEL_SCHEDULE}.plist"
+
+
+def _launchd_plist_schedule(root: Path, use_ocr: bool, hour: int, minute: int) -> str:
+    """StartCalendarInterval を使った launchd plist を生成する。"""
+    args_xml = f"<string>{_python_executable()}</string>\n"
+    args_xml += f"        <string>{LOCAL_ORGANIZER}</string>\n"
+    args_xml += f"        <string>--root</string>\n"
+    args_xml += f"        <string>{root}</string>"
+    if use_ocr:
+        args_xml += f"\n        <string>--ocr</string>"
+
+    log_out = LOG_DIR / "organizer.log"
+    log_err = LOG_DIR / "organizer_err.log"
+
+    return dedent(f"""\
+        <?xml version="1.0" encoding="UTF-8"?>
+        <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+            "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+        <plist version="1.0">
+        <dict>
+            <key>Label</key>
+            <string>{MACOS_LABEL_SCHEDULE}</string>
+
+            <key>ProgramArguments</key>
+            <array>
+                {args_xml}
+            </array>
+
+            <key>StartCalendarInterval</key>
+            <dict>
+                <key>Hour</key>
+                <integer>{hour}</integer>
+                <key>Minute</key>
+                <integer>{minute}</integer>
+            </dict>
+
+            <key>StandardOutPath</key>
+            <string>{log_out}</string>
+
+            <key>StandardErrorPath</key>
+            <string>{log_err}</string>
+
+            <key>WorkingDirectory</key>
+            <string>{SCRIPT_DIR}</string>
+        </dict>
+        </plist>
+    """)
+
+
+def _launchd_schedule_install(root: Path, use_ocr: bool, hour: int, minute: int) -> None:
+    """定時実行 launchd LaunchAgent を登録する。"""
+    plist_path = _launchd_plist_schedule_path()
+    plist_path.parent.mkdir(parents=True, exist_ok=True)
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+
+    plist = _launchd_plist_schedule(root, use_ocr, hour, minute)
+    plist_path.write_text(plist)
+    logger.info("定時実行 plist を作成: %s", plist_path)
+
+    _run(["launchctl", "unload", str(plist_path)], check=False)
+    _run(["launchctl", "load", "-w", str(plist_path)])
+
+    print(f"\n✓ 定時実行 LaunchAgent を登録しました。")
+    print(f"  実行時刻 : 毎日 {hour:02d}:{minute:02d}")
+    print(f"  ログ     : {LOG_DIR}/organizer.log")
+    print(f"  状態確認 : launchctl list {MACOS_LABEL_SCHEDULE}")
+
+
+def _launchd_schedule_uninstall() -> None:
+    """定時実行 launchd LaunchAgent を停止・解除する。"""
+    plist_path = _launchd_plist_schedule_path()
+    if plist_path.exists():
+        _run(["launchctl", "unload", str(plist_path)], check=False)
+        plist_path.unlink()
+        logger.info("定時実行 plist を削除: %s", plist_path)
+        print(f"\n✓ 定時実行 LaunchAgent を停止・解除しました。")
+
+
+def _launchd_schedule_status() -> None:
+    """定時実行 launchd エージェントの状態を表示する。"""
+    _run(["launchctl", "list", MACOS_LABEL_SCHEDULE], check=False)
 
 
 # ================================================================== #
@@ -249,7 +458,7 @@ def _run(cmd: list[str], check: bool = True) -> None:
             raise RuntimeError(f"コマンドが見つかりません: {cmd[0]}")
 
 
-def _check_prerequisites(root: Path, use_ocr: bool) -> None:
+def _check_prerequisites(root: Path, use_ocr: bool, use_watch: bool = True) -> None:
     """前提条件を確認する。問題があれば警告を表示。"""
     errors: list[str] = []
     warnings: list[str] = []
@@ -265,11 +474,12 @@ def _check_prerequisites(root: Path, use_ocr: bool) -> None:
     elif not inbox.exists():
         warnings.append(f"00_Inbox フォルダが存在しません (初回実行時に作成されます): {inbox}")
 
-    # watchdog の確認
-    try:
-        import watchdog
-    except ImportError:
-        errors.append("watchdog が未インストールです: pip install watchdog")
+    # watchdog の確認 (--watch モードのみ必要)
+    if use_watch:
+        try:
+            import watchdog
+        except ImportError:
+            errors.append("watchdog が未インストールです: pip install watchdog")
 
     # OCR の確認
     if use_ocr:
@@ -303,6 +513,17 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="drive-organizer の自動起動を OS に登録・解除する",
         formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=dedent("""\
+            使用例:
+              INBOX への追加をリアルタイム即時振り分け:
+                python setup_autostart.py install --root ~/GoogleDrive --watch
+
+              毎日 05:00 に定時フルスキャン:
+                python setup_autostart.py install --root ~/GoogleDrive --schedule 05:00
+
+              即時振り分け + 定時スキャン (推奨):
+                python setup_autostart.py install --root ~/GoogleDrive --watch --schedule 05:00
+        """),
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -313,6 +534,16 @@ def build_arg_parser() -> argparse.ArgumentParser:
         required=True,
         metavar="DIR",
         help="Google Drive のローカル同期フォルダのルートパス",
+    )
+    inst.add_argument(
+        "--watch",
+        action="store_true",
+        help="INBOX へのファイル追加をリアルタイムで即時振り分け (watchdog 常駐)",
+    )
+    inst.add_argument(
+        "--schedule",
+        metavar="HH:MM",
+        help="指定時刻に毎日定時フルスキャンを実行 (例: --schedule 05:00)",
     )
     inst.add_argument(
         "--ocr",
@@ -340,31 +571,71 @@ def main() -> None:
     if args.command == "install":
         root = Path(args.root).expanduser().resolve()
         use_ocr = args.ocr
+        use_watch = args.watch
+        schedule = args.schedule
+
+        if not use_watch and not schedule:
+            print("エラー: --watch または --schedule (あるいは両方) を指定してください。\n")
+            print("  INBOX への追加をリアルタイム即時振り分け:")
+            print(f"    python setup_autostart.py install --root {root} --watch")
+            print("  毎日 05:00 に定時フルスキャン:")
+            print(f"    python setup_autostart.py install --root {root} --schedule 05:00")
+            print("  即時振り分け + 定時スキャン (推奨):")
+            print(f"    python setup_autostart.py install --root {root} --watch --schedule 05:00")
+            sys.exit(1)
+
+        sched_hour, sched_minute = None, None
+        if schedule:
+            try:
+                sched_hour, sched_minute = _parse_schedule(schedule)
+            except ValueError as e:
+                print(f"エラー: {e}")
+                sys.exit(1)
+
         print(f"前提条件を確認中...")
-        _check_prerequisites(root, use_ocr)
+        _check_prerequisites(root, use_ocr, use_watch=use_watch)
 
         if _is_linux():
-            _systemd_install(root, use_ocr)
+            if use_watch:
+                _systemd_install(root, use_ocr)
+            if schedule:
+                _cron_install(root, use_ocr, sched_hour, sched_minute)
         elif _is_macos():
-            _launchd_install(root, use_ocr)
+            if use_watch:
+                _launchd_install(root, use_ocr)
+            if schedule:
+                _launchd_schedule_install(root, use_ocr, sched_hour, sched_minute)
         else:
-            print("Windows は現在未対応です。タスクスケジューラで以下を登録してください:")
-            print(f"  {_python_executable()} {LOCAL_ORGANIZER} --root {root} --watch")
+            cmds = []
+            if use_watch:
+                cmds.append(f"{_python_executable()} {LOCAL_ORGANIZER} --root {root} --watch")
+            if schedule:
+                cmds.append(f"タスクスケジューラで毎日 {sched_hour:02d}:{sched_minute:02d} に実行:")
+                cmds.append(f"  {_python_executable()} {LOCAL_ORGANIZER} --root {root}")
+            print("Windows は現在未対応です。以下を参考に手動で登録してください:")
+            for cmd in cmds:
+                print(f"  {cmd}")
             sys.exit(1)
+
+        print(f"\n  停止     : python setup_autostart.py uninstall")
 
     elif args.command == "uninstall":
         if _is_linux():
             _systemd_uninstall()
+            _cron_uninstall()
         elif _is_macos():
             _launchd_uninstall()
+            _launchd_schedule_uninstall()
         else:
             print("手動でタスクスケジューラからエントリを削除してください。")
 
     elif args.command == "status":
         if _is_linux():
             _systemd_status()
+            _cron_status()
         elif _is_macos():
             _launchd_status()
+            _launchd_schedule_status()
         else:
             print("Windows のサービス状態は タスクスケジューラ で確認してください。")
 
