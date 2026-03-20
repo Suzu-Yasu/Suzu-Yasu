@@ -29,3 +29,13 @@ pillow>=10.0.0
 # 常駐監視モード (--watch オプション使用時)
 #   pip install watchdog
 watchdog>=4.0.0
+
+# ============================================================
+# AI 分類モード (--ai オプション使用時)
+# OCR テキストを LLM に送って柔軟にファイル分類する。
+# ============================================================
+#   pip install openai
+#   環境変数 OPENAI_API_KEY の設定も必要:
+#     Windows : set OPENAI_API_KEY=sk-...
+#     macOS/Linux: export OPENAI_API_KEY='sk-...'
+openai>=1.0.0
