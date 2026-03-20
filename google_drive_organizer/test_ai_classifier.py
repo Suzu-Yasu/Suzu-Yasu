@@ -1,7 +1,7 @@
 """
 test_ai_classifier.py
 ai_classifier.py のユニットテスト。
-OpenAI API を呼ばずにモックでテストする。
+Gemini API を呼ばずにモックでテストする。
 """
 
 from __future__ import annotations
@@ -34,7 +34,7 @@ class TestClassifyWithAi:
         result = classify_with_ai("test.pdf", "   \n  ")
         assert not result.is_classified
 
-    @patch("ai_classifier._call_openai")
+    @patch("ai_classifier._call_gemini")
     def test_successful_classification(self, mock_call):
         mock_call.return_value = {
             "target_path": ["01_University_Lecture", "2026_Spring", "01_LinAlg"],
@@ -45,7 +45,7 @@ class TestClassifyWithAi:
         assert result.target_path == ["01_University_Lecture", "2026_Spring", "01_LinAlg"]
         assert "線形代数" in result.reason
 
-    @patch("ai_classifier._call_openai")
+    @patch("ai_classifier._call_gemini")
     def test_null_target_path(self, mock_call):
         mock_call.return_value = {
             "target_path": None,
@@ -54,26 +54,26 @@ class TestClassifyWithAi:
         result = classify_with_ai("random.pdf", "何かのテキスト")
         assert not result.is_classified
 
-    @patch("ai_classifier._call_openai")
+    @patch("ai_classifier._call_gemini")
     def test_api_error_returns_unclassified(self, mock_call):
         mock_call.side_effect = Exception("API Error")
         result = classify_with_ai("test.pdf", "テキスト内容")
         assert not result.is_classified
         assert "API呼び出し失敗" in result.reason
 
-    @patch("ai_classifier._call_openai")
+    @patch("ai_classifier._call_gemini")
     def test_json_parse_error(self, mock_call):
         mock_call.side_effect = json.JSONDecodeError("err", "doc", 0)
         result = classify_with_ai("test.pdf", "テキスト内容")
         assert not result.is_classified
 
-    @patch("ai_classifier._call_openai")
+    @patch("ai_classifier._call_gemini")
     def test_import_error(self, mock_call):
-        mock_call.side_effect = ImportError("openai not installed")
+        mock_call.side_effect = ImportError("google-genai not installed")
         result = classify_with_ai("test.pdf", "テキスト内容")
         assert not result.is_classified
 
-    @patch("ai_classifier._call_openai")
+    @patch("ai_classifier._call_gemini")
     def test_path_with_empty_strings_cleaned(self, mock_call):
         mock_call.return_value = {
             "target_path": ["04_Music_Score", "", "01_Solo", "  "],

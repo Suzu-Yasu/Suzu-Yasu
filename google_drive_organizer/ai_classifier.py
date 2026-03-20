@@ -1,11 +1,11 @@
 """
 ai_classifier.py
-OCR テキストとファイル名を LLM (OpenAI API) に送り、
+OCR テキストとファイル名を LLM (Google Gemini API) に送り、
 フォルダ構造に基づいて柔軟にファイルを分類するモジュール。
 
 必要:
-  pip install openai
-  環境変数 OPENAI_API_KEY を設定
+  pip install google-generativeai
+  環境変数 GEMINI_API_KEY を設定
 
 使い方 (local_organizer.py から):
   python local_organizer.py --root <path> --ai
@@ -104,27 +104,29 @@ SYSTEM_PROMPT = """\
 
 
 # ================================================================== #
-#  LLM 呼び出し
+#  LLM 呼び出し (Google Gemini API)
 # ================================================================== #
 
-def _call_openai(filename: str, ocr_text: str, model: str = "gpt-4o-mini") -> Optional[dict]:
-    """OpenAI API を呼び出してファイル分類結果の辞書を返す。"""
+def _call_gemini(filename: str, ocr_text: str, model: str = "gemini-2.0-flash") -> Optional[dict]:
+    """Google Gemini API を呼び出してファイル分類結果の辞書を返す。"""
     try:
-        import openai
+        from google import genai
     except ImportError:
         raise ImportError(
-            "openai が未インストールです: pip install openai\n"
-            "環境変数 OPENAI_API_KEY も設定してください。"
+            "google-genai が未インストールです: pip install google-genai\n"
+            "環境変数 GEMINI_API_KEY も設定してください。"
         )
 
-    api_key = os.environ.get("OPENAI_API_KEY")
+    api_key = os.environ.get("GEMINI_API_KEY")
     if not api_key:
         raise RuntimeError(
-            "環境変数 OPENAI_API_KEY が設定されていません。\n"
-            "export OPENAI_API_KEY='sk-...' を実行してください。"
+            "環境変数 GEMINI_API_KEY が設定されていません。\n"
+            "Windows : set GEMINI_API_KEY=AIza...\n"
+            "macOS/Linux: export GEMINI_API_KEY='AIza...'\n"
+            "Google AI Studio (https://aistudio.google.com/apikey) で無料取得できます。"
         )
 
-    client = openai.OpenAI(api_key=api_key)
+    client = genai.Client(api_key=api_key)
 
     # OCR テキストが長すぎる場合は先頭を切り詰め
     max_chars = 3000
@@ -139,17 +141,18 @@ def _call_openai(filename: str, ocr_text: str, model: str = "gpt-4o-mini") -> Op
 
     logger.debug("AI分類リクエスト送信: model=%s, filename='%s'", model, filename)
 
-    response = client.chat.completions.create(
+    response = client.models.generate_content(
         model=model,
-        messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": user_message},
+        contents=[
+            {"role": "user", "parts": [{"text": SYSTEM_PROMPT + "\n\n" + user_message}]},
         ],
-        temperature=0.0,
-        max_tokens=300,
+        config={
+            "temperature": 0.0,
+            "max_output_tokens": 300,
+        },
     )
 
-    raw = response.choices[0].message.content.strip()
+    raw = response.text.strip()
     logger.debug("AI応答: %s", raw)
 
     # JSON パース (```json ... ``` で囲まれている場合も対処)
@@ -166,16 +169,16 @@ def _call_openai(filename: str, ocr_text: str, model: str = "gpt-4o-mini") -> Op
 def classify_with_ai(
     filename: str,
     ocr_text: str,
-    model: str = "gpt-4o-mini",
+    model: str = "gemini-2.0-flash",
 ) -> ClassificationResult:
     """
-    OCR テキストとファイル名を LLM に送り、分類結果を返す。
+    OCR テキストとファイル名を Gemini に送り、分類結果を返す。
 
     Parameters
     ----------
     filename  : ファイル名
     ocr_text  : OCR で抽出したテキスト
-    model     : 使用する OpenAI モデル (デフォルト: gpt-4o-mini)
+    model     : 使用する Gemini モデル (デフォルト: gemini-2.0-flash)
 
     Returns
     -------
@@ -189,7 +192,7 @@ def classify_with_ai(
         )
 
     try:
-        result = _call_openai(filename, ocr_text, model=model)
+        result = _call_gemini(filename, ocr_text, model=model)
     except ImportError as e:
         logger.error("%s", e)
         return ClassificationResult(

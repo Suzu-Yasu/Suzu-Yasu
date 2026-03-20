@@ -454,20 +454,20 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--ai",
         action="store_true",
         help=(
-            "AI分類モード: 全ファイルに対して OCR → LLM (OpenAI API) で\n"
+            "AI分類モード: 全ファイルに対して OCR → Gemini API で\n"
             "ファイル内容を分析し、柔軟にフォルダ分類する。\n"
             "ファイル名の命名規則に従っていなくても分類可能。\n"
-            "事前に 'pip install openai pdfplumber pytesseract pdf2image pillow' と\n"
-            "環境変数 OPENAI_API_KEY の設定が必要。"
+            "事前に 'pip install google-genai pdfplumber pytesseract pdf2image pillow' と\n"
+            "環境変数 GEMINI_API_KEY の設定が必要。"
         ),
     )
     parser.add_argument(
         "--ai-model",
-        default="gpt-4o-mini",
+        default="gemini-2.0-flash",
         metavar="MODEL",
         help=(
-            "AI分類に使用する OpenAI モデル (デフォルト: gpt-4o-mini)。\n"
-            "精度を上げたい場合は gpt-4o を指定。"
+            "AI分類に使用する Gemini モデル (デフォルト: gemini-2.0-flash)。\n"
+            "精度を上げたい場合は gemini-2.5-pro を指定。"
         ),
     )
     return parser

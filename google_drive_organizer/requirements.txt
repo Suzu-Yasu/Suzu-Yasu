@@ -32,10 +32,12 @@ watchdog>=4.0.0
 
 # ============================================================
 # AI 分類モード (--ai オプション使用時)
-# OCR テキストを LLM に送って柔軟にファイル分類する。
+# OCR テキストを Gemini API に送って柔軟にファイル分類する。
 # ============================================================
-#   pip install openai
-#   環境変数 OPENAI_API_KEY の設定も必要:
-#     Windows : set OPENAI_API_KEY=sk-...
-#     macOS/Linux: export OPENAI_API_KEY='sk-...'
-openai>=1.0.0
+#   pip install google-genai
+#   環境変数 GEMINI_API_KEY の設定も必要:
+#     Windows : set GEMINI_API_KEY=AIza...
+#     macOS/Linux: export GEMINI_API_KEY='AIza...'
+#   API キーは Google AI Studio で無料取得:
+#     https://aistudio.google.com/apikey
+google-genai>=1.0.0
